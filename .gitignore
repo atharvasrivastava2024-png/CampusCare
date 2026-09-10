@@ -1,0 +1,23 @@
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+
+# Python runtime artifacts and local databases
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+
+# JavaScript dependencies and generated output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Tooling and operating system files
+.pytest_cache/
+.vite/
+.frontend-git-history-backup/
+.DS_Store
+npm-debug.log*
