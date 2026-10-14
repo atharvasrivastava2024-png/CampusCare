@@ -1,65 +1,168 @@
-# AIVOA - AI Customer Complaint Management Copilot
+# CampusCare AI 🎓
 
-A split-screen pharma QMS complaint intake tool. Paste an email, upload a PDF,
-or type a correction into the AIVOA Copilot chat on the right, and the
-"Log Customer Complaint" form on the left fills itself in, complete with an
-AI-generated severity rating, risk assessment, next action, and CAPA
-recommendations.
+**AI-Powered College Complaint Lodging System**
 
-## Architecture
+CampusCare AI is a student-focused web application designed to simplify college complaint submission. It uses artificial intelligence to classify student complaints and generate formal complaint letters, helping students prepare structured complaints for submission to the appropriate college authority.
 
-- **Frontend:** React + Redux Toolkit + Tailwind CSS (Vite), Inter font.
-- **Backend:** FastAPI + SQLAlchemy (works with PostgreSQL, MySQL, or SQLite).
-- **AI:** LangGraph orchestrating two Groq-hosted models:
-  - `gemma2-9b-it` for fast routing and entity extraction
-  - `llama-3.3-70b-versatile` for risk reasoning and CAPA generation
+## ✨ Features
 
-### The graph
+- **AI-Powered Complaint Classification:** Uses Groq-powered language models to identify the appropriate complaint category from a student's description.
+- **AI-Generated Complaint Letters:** Generates formal complaint letter drafts from the student's complaint details.
+- **Student Complaint Workflow:** Provides a guided interface for describing a complaint, reviewing the generated letter, and proceeding through the complaint workflow.
+- **Complaint Management:** Supports complaint submission and complaint records through the backend.
+- **Database Integration:** Uses Supabase PostgreSQL for persistent application data.
+- **REST API Backend:** Uses FastAPI to connect the frontend with backend services and AI functionality.
+- **Student-Focused Interface:** Built with React and Vite for a responsive, interactive user experience.
 
+## 🛠️ Technology Stack
+
+| Component | Technologies |
+|---|---|
+| Frontend | React, Vite, JavaScript, CSS |
+| Backend | Python, FastAPI |
+| AI and Language Models | Groq API |
+| Database | Supabase PostgreSQL |
+| API Communication | REST API |
+| Testing | pytest |
+
+## 🏗️ Architecture
+
+```text
+Student
+   |
+   v
+React + Vite Frontend
+   |
+   v
+FastAPI Backend
+   |
+   +----> Groq API
+   |        |
+   |        +----> Complaint Classification
+   |        +----> Formal Letter Generation
+   |
+   +----> Supabase PostgreSQL
+            |
+            +----> Persistent Application Data
 ```
-router --chitchat--> chitchat_respond --> END
-  |
-  +--new_complaint/correction--> extraction --> completeness_checker
-                                                     |
-                                    missing fields --+--> responder --> END
-                                                     |
-                                                complete
-                                                     |
-                                                     v
-                                          risk_assessment --> capa_recommendation --> responder --> END
+
+## 📁 Project Structure
+
+```text
+CampusCare/
+├── backend/
+│   ├── app.py
+│   ├── llm_utils.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── security.py
+│   ├── services.py
+│   ├── migrations/
+│   ├── tests/
+│   ├── requirements.txt
+│   ├── .env.example
+│   └── README.md
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── App.css
+│   │   ├── StudentPortal.jsx
+│   │   ├── api.js
+│   │   ├── index.css
+│   │   ├── main.jsx
+│   │   └── data/
+│   ├── index.html
+│   ├── package.json
+│   └── package-lock.json
+│
+├── .gitignore
+└── README.md
 ```
 
-State is threaded per `session_id` with LangGraph's `MemorySaver`, so when
-you type a correction like "actually the batch number is BMX240602", the
-extraction node fills in just that field and it's merged on top of whatever
-was already captured, no need to resend the whole conversation.
+## ⚙️ Getting Started
 
-## Backend setup
+### Prerequisites
+
+Install the following before running the project:
+
+- Python 3.10 or a compatible version supported by the backend dependencies
+- Node.js and npm
+- A Groq API key
+- A Supabase project with PostgreSQL configured
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/atharvasrivastava2024-png/CampusCare.git
+cd CampusCare
+```
+
+### 2. Configure the backend
+
+Open a terminal in the project root and navigate to the backend:
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate   # venv\Scripts\activate on Windows
+python -m venv .venv
+```
+
+Activate the virtual environment.
+
+**Windows PowerShell:**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+**macOS/Linux:**
+
+```bash
+source .venv/bin/activate
+```
+
+Install the Python dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-Fill in `.env` (copy from `.env.example`) with your Groq API key and DB URL:
+Create a local `.env` file using `.env.example` as a reference. Configure the required Groq API key, Supabase credentials, and other environment variables expected by the backend.
 
-```
-GROQ_API_KEY=your_groq_api_key_here
-DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/aivoa_qms
-```
+**Important:** Use your actual environment variable names from `backend/.env.example`. Never commit real API keys, database credentials, or other secrets.
 
-If you skip `DATABASE_URL`, the app falls back to a local SQLite file so it
-still runs out of the box.
+### 3. Configure the database
 
-Run it:
+1. Create or select a Supabase project.
+2. Configure the PostgreSQL connection using the credentials expected by the application.
+3. Review the SQL migration files in `backend/migrations/`.
+4. Apply the required migration to your database according to your Supabase setup.
+
+Do not run migrations against a production database without reviewing their effects first.
+
+### 4. Start the backend
+
+From the `backend/` directory, run:
 
 ```bash
-uvicorn app:app --reload --port 8000
+uvicorn app:app --reload
 ```
 
-## Frontend setup
+The API will generally be available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+FastAPI's interactive API documentation is generally available at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+### 5. Start the frontend
+
+Open a second terminal:
 
 ```bash
 cd frontend
@@ -67,36 +170,69 @@ npm install
 npm run dev
 ```
 
-Vite's dev server proxies `/api` to `http://localhost:8000` (see
-`vite.config.js`), so just open the printed local URL and the two are
-already wired together.
+Open the local URL printed by Vite in your terminal, typically:
 
-## Try it
+```text
+http://localhost:5173
+```
 
-1. Paste something like:
+Ensure the frontend API configuration in `frontend/src/api.js` points to the running backend.
 
-   > Hi, this is Apollo Pharmacy. A customer returned Paracetamol 500mg,
-   > batch PB2201, complaining that 12 tablets in a strip of 15 came out
-   > discolored and crumbling. They want a refund.
+## 🔄 Application Workflow
 
-2. Watch the form populate, along with a severity rating, risk assessment,
-   next action, and CAPA suggestions.
-3. Type a correction, e.g. "actually the batch number is BMX240602 and it
-   was 48 capsules affected" - only those two fields update.
-4. Try uploading a PDF complaint letter instead of pasting text.
-5. Click "Save" (wire this to `POST /api/complaints/save` from the form
-   once you're ready) to persist the record to the database.
+1. **Describe:** The student enters a description of the college-related issue.
+2. **Classify:** The backend uses a Groq-powered language model to determine an appropriate complaint category.
+3. **Generate:** The AI generates a formal complaint letter draft from the available complaint information.
+4. **Review:** The student reviews and edits the generated draft as needed.
+5. **Proceed:** The student continues through the available complaint workflow, with application data handled by the backend and database.
 
-## Notes on production-hardening
+AI-generated content should be reviewed by the student before it is used or submitted.
 
-- CORS is wide open (`allow_origins=["*"]`) for local development. Restrict
-  it to your actual frontend origin before deploying.
-- PDF extraction uses PyMuPDF's text layer. Scanned/image-only PDFs will
-  extract no text; add an OCR fallback (e.g. `pytesseract`) if you need to
-  support those.
-- `MemorySaver` keeps conversation state in process memory. Swap in
-  LangGraph's SQLite/Postgres checkpointer if you need state to survive a
-  backend restart or run across multiple workers.
-- The completeness checker currently gates only on a fixed required-field
-  list (`REQUIRED_FIELDS` in `graph.py`). Adjust that list to match your
-  actual SOP.
+## 🧪 Testing
+
+Backend tests are located in `backend/tests/`.
+
+Activate the backend virtual environment and run:
+
+```bash
+cd backend
+pytest
+```
+
+The test suite should be run in an environment with the necessary dependencies and configuration. External services may require suitable test configuration or mocks.
+
+## 🔐 Security
+
+- Keep API keys and database credentials in environment variables.
+- Do not commit `.env` files or virtual environments.
+- Use `.env.example` to document required configuration without exposing secrets.
+- Validate incoming API requests on the backend.
+- Protect student complaint data and restrict access according to the application's authentication and authorization rules.
+- Review AI-generated letters before submission.
+
+## 🚧 Current Scope and Future Enhancements
+
+CampusCare AI is under active development. The implemented functionality should be verified against the current application before relying on it in production.
+
+Potential future enhancements include:
+
+- College-policy retrieval and rule-based complaint guidance using Retrieval-Augmented Generation (RAG).
+- Gmail API integration for sending approved complaint letters.
+- Expanded complaint tracking and status updates.
+- Improved administrative workflows and analytics.
+- Additional automated tests and production deployment configuration.
+
+**Note:** College-policy RAG and Gmail API delivery are not part of the current implementation scope described here.
+
+## 🤝 Contributing
+
+Contributions, bug reports, and suggestions are welcome.
+
+1. Fork the repository.
+2. Create a feature branch.
+3. Make and test your changes.
+4. Submit a pull request describing the changes.
+
+## 📄 License
+
+No license has been specified yet. Until a license is added to this repository, do not assume that the project is available for unrestricted reuse or redistribution.
