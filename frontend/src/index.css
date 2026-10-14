@@ -2,20 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color: #0f172a;
+  background: #f8fafc;
+  font-family: Inter, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 html,
 body,
 #root {
-  height: 100%;
+  min-height: 100%;
+  margin: 0;
 }
 
 body {
-  @apply font-sans bg-slate-50 text-slate-800;
+  min-height: 100vh;
+  background: #f8fafc;
+  color: #0f172a;
 }
 
-.thin-scrollbar::-webkit-scrollbar {
-  width: 6px;
+* {
+  box-sizing: border-box;
 }
-.thin-scrollbar::-webkit-scrollbar-thumb {
-  background-color: #cbd5e1;
-  border-radius: 999px;
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgb(148 163 184);
 }

@@ -1,84 +1,24 @@
-"""
-schemas.py
-----------
-Pydantic models shared by the API layer and the LangGraph nodes.
-
-`ComplaintExtraction` doubles as the structured-output target for the
-Extraction node (gemma2-9b-it). Every field is Optional because a
-single user message rarely contains the whole complaint, and on a
-correction turn ("actually the batch number is...") only one or two
-fields will be filled in.
-"""
-from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
-
-
-class ComplaintExtraction(BaseModel):
-    """Fields the Extraction node is allowed to fill in from free text."""
-    complaint_source: Optional[str] = Field(
-        None, description="Where the complaint came from, e.g. 'Apollo Pharmacy', 'Direct Email', 'Call Center'")
-    customer_name: Optional[str] = Field(None, description="Name of the customer or reporting party")
-    product_name: Optional[str] = Field(None, description="Brand/product name")
-    product_strength: Optional[str] = Field(None, description="Dosage strength, e.g. '500mg'")
-    batch_number: Optional[str] = Field(None, description="Batch or lot number")
-    affected_quantity: Optional[str] = Field(None, description="Quantity affected, e.g. '48 capsules'")
-    mfg_date: Optional[str] = Field(None, description="Manufacturing date")
-    exp_date: Optional[str] = Field(None, description="Expiry date")
-    complaint_category: Optional[str] = Field(
-        None, description="e.g. 'Physical Defect', 'Packaging', 'Adverse Event', 'Efficacy', 'Foreign Particle'")
-    description: Optional[str] = Field(None, description="Free-text narrative describing what went wrong")
-
-
-class RouterOutput(BaseModel):
-    input_type: Literal["new_complaint", "correction", "chitchat"] = Field(
-        ..., description="Classify the user's message")
-
-
-class RiskAssessmentOutput(BaseModel):
-    severity: Literal["Minor", "Major", "Critical"]
-    initial_risk_assessment: str = Field(..., description="2-3 sentence risk rationale")
-    next_action: str = Field(..., description="Concrete next step, e.g. 'Route to QA for batch investigation'")
-
-
-class CAPAOutput(BaseModel):
-    recommendations: List[str] = Field(..., description="3-5 concrete CAPA recommendations")
-
-
-class ChatRequest(BaseModel):
-    session_id: str
-    message: str
-
-
-class ChatResponse(BaseModel):
-    reply: str
-    complaint_data: dict
-    missing_fields: List[str]
-    updated_fields: List[str]
-
-
-class SaveComplaintRequest(BaseModel):
-    session_id: str
-    complaint_data: dict
-
-
+from datetime import datetime
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, model_validator
+Category = Literal["Library", "Student Welfare", "Hostel", "Proctor", "Gym", "Food & Mess"]
+Urgency = Literal["Low", "Medium", "High"]
+Status = Literal["Draft", "Processing", "Awaiting Approval", "Approved", "Sent", "Failed"]
+class Classification(BaseModel):
+    category: Optional[Category] = None; subcategory: Optional[str] = Field(None, max_length=120); urgency: Optional[Urgency] = None; classification_reason: str = Field(..., min_length=1, max_length=500); needs_clarification: bool = False; clarification_question: Optional[str] = Field(None, max_length=500)
+    @model_validator(mode="after")
+    def valid(self):
+        if self.needs_clarification and not self.clarification_question: raise ValueError("clarification question required")
+        if not self.needs_clarification and (not self.category or not self.urgency): raise ValueError("category and urgency required")
+        return self
+class StudentComplaintClassificationRequest(BaseModel):
+    description: str = Field(..., min_length=20, max_length=4000); clarification: Optional[str] = Field(None, max_length=1000); category_hint: Optional[Category] = None
+class ComplaintCreate(BaseModel): title: Optional[str] = Field(None, max_length=200); description: str = Field(..., min_length=20, max_length=4000)
+class ComplaintUpdate(BaseModel): title: Optional[str] = Field(None, min_length=1, max_length=200); description: Optional[str] = Field(None, min_length=20, max_length=4000)
+class LetterDraftEdit(BaseModel): subject: Optional[str] = Field(None, min_length=1, max_length=300); body: Optional[str] = Field(None, min_length=1, max_length=10000)
+class LetterOut(BaseModel):
+    id: str; version: int; recipient_name: str; recipient_email: str; subject: str; body: str; approved_at: Optional[datetime] = None; created_at: datetime; updated_at: datetime
+    class Config: from_attributes = True
 class ComplaintOut(BaseModel):
-    id: str
-    session_id: Optional[str] = None
-    complaint_source: Optional[str] = None
-    customer_name: Optional[str] = None
-    product_name: Optional[str] = None
-    product_strength: Optional[str] = None
-    batch_number: Optional[str] = None
-    affected_quantity: Optional[str] = None
-    mfg_date: Optional[str] = None
-    exp_date: Optional[str] = None
-    complaint_category: Optional[str] = None
-    description: Optional[str] = None
-    severity: Optional[str] = None
-    initial_risk_assessment: Optional[str] = None
-    next_action: Optional[str] = None
-    capa_recommendations: Optional[str] = None
-    status: str
-
-    class Config:
-        from_attributes = True
+    id: str; title: str; description: str; category: Optional[Category] = None; subcategory: Optional[str] = None; urgency: Optional[Urgency] = None; classification_reason: Optional[str] = None; needs_clarification: bool; clarification_question: Optional[str] = None; status: Status; created_at: datetime; updated_at: datetime; current_draft: Optional[LetterOut] = None
+class PaginatedComplaints(BaseModel): items: list[ComplaintOut]; total: int; offset: int; limit: int

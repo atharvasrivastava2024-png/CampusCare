@@ -3,7 +3,9 @@
 .env.*
 !.env.example
 
-# Python runtime artifacts and local databases
+# Python runtime artifacts and local environments
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 *.db

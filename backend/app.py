@@ -1,137 +1,146 @@
-"""
-app.py
-------
-FastAPI entrypoint for the AIVOA Complaint Copilot backend.
-
-Endpoints:
-    POST /api/chat              one turn of the copilot conversation
-    POST /api/upload            upload a PDF complaint, extract text, run it through the same graph
-    POST /api/complaints/save   persist the current form state to the DB
-    GET  /api/complaints        list saved complaints
-    GET  /api/complaints/{id}   fetch one saved complaint
-    GET  /api/health            liveness check
-
-Run with:
-    uvicorn app:app --reload --port 8000
-"""
-import fitz  # PyMuPDF
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+"""CampusCare AI API. RAG and Gmail delivery are deliberately separate future integrations."""
+import datetime as dt
+import os
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from groq import APIError
 from sqlalchemy.orm import Session
-import logging
-
 from database import Base, engine, get_db
-from models import Complaint
-from schemas import ChatRequest, ChatResponse, SaveComplaintRequest, ComplaintOut
-from graph import run_turn, empty_complaint_dict
+from models import AuthorityMapping, EmailLog, LetterDraft, StudentComplaint, StudentProfile
+from schemas import ComplaintCreate, ComplaintOut, ComplaintUpdate, LetterDraftEdit, LetterOut, PaginatedComplaints, StudentComplaintClassificationRequest
+from security import Identity, current_identity
+from services import AIServiceError, classify, generate_letter, letter
 
 Base.metadata.create_all(bind=engine)
+app = FastAPI(title="CampusCare AI", version="2.0.0")
+origins = [x.strip() for x in os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").split(",") if x.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["GET", "POST", "PATCH"], allow_headers=["Authorization", "Content-Type"])
 
-app = FastAPI(title="AIVOA Complaint Copilot", version="1.0.0")
-logger = logging.getLogger(__name__)
+def profile(identity: Identity, db: Session):
+    p = db.query(StudentProfile).filter_by(auth_user_id=identity.user_id).first()
+    if not p:
+        p = StudentProfile(auth_user_id=identity.user_id, institutional_email=identity.email, full_name=identity.name); db.add(p); db.commit(); db.refresh(p)
+    return p
+def owned(cid, identity, db):
+    c = db.query(StudentComplaint).join(StudentProfile).filter(StudentComplaint.id == cid, StudentProfile.auth_user_id == identity.user_id).first()
+    if not c: raise HTTPException(404, "Complaint not found")
+    return c
+def output(c):
+    draft = max(c.drafts, key=lambda x: x.version) if c.drafts else None
+    return ComplaintOut.model_validate({**{k: getattr(c, k) for k in ("id","title","description","category","subcategory","urgency","classification_reason","needs_clarification","clarification_question","status","created_at","updated_at")}, "current_draft": LetterOut.model_validate(draft) if draft else None})
+def classify_record(c, request):
+    result = classify(c.description, request.clarification, request.category_hint)
+    c.category, c.subcategory, c.urgency = result.category, result.subcategory, result.urgency
+    c.classification_reason, c.needs_clarification, c.clarification_question = result.classification_reason, result.needs_clarification, result.clarification_question
+    c.status = "Draft" if result.needs_clarification else "Processing"
+    return result
+def draft_record(c, p, db):
+    if c.needs_clarification or not c.category or not c.urgency: raise HTTPException(409, "Classification must be completed before generating a draft")
+    authority = db.query(AuthorityMapping).filter_by(category=c.category, is_active=True).first()
+    if not authority: raise HTTPException(409, "No active authority mapping exists for this category. Ask an administrator to configure one.")
+    data = letter(c.description, c.category, c.subcategory, c.urgency, p.full_name, authority.authority_name, authority.official_email)
+    version = max((d.version for d in c.drafts), default=0) + 1
+    d = LetterDraft(complaint_id=c.id, version=version, **data); db.add(d); c.status = "Awaiting Approval"; return d
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # tighten this to your frontend origin in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.exception_handler(APIError)
-async def groq_error_handler(_, exc: APIError):
-    """Expose a stable API error while retaining the provider detail in logs."""
-    logger.exception("Groq API request failed: %s", exc)
-    return JSONResponse(
-        status_code=502,
-        content={"detail": "The AI provider could not process this request. Check the backend logs."},
-    )
-
-
-def extract_pdf_text(file_bytes: bytes) -> str:
-    """Extract raw text from a PDF using PyMuPDF. If the PDF is a scanned
-    image with no text layer, this comes back empty - hook in an OCR step
-    (e.g. pytesseract) here if you need to handle scanned complaints."""
-    text_chunks = []
-    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-        for page in doc:
-            text_chunks.append(page.get_text())
-    return "\n".join(text_chunks).strip()
-
-
+@app.get("/health")
 @app.get("/api/health")
-def health():
-    return {"status": "ok"}
+def health(): return {"status": "ok", "service": "campuscare-api"}
 
+@app.post("/api/student-complaints/classify")
+def compatibility_classify(req: StudentComplaintClassificationRequest):
+    """Compatibility endpoint; persistent workflow uses POST /api/complaints."""
+    try:
+        data = classify(req.description, req.clarification, req.category_hint)
+        return {**data.model_dump(), "requires_clarification": data.needs_clarification}
+    except (AIServiceError, RuntimeError) as exc: raise HTTPException(502 if os.getenv("GROQ_API_KEY") else 503, str(exc))
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    result = run_turn(req.session_id, req.message)
-    return ChatResponse(
-        reply=result.get("reply", ""),
-        complaint_data=result.get("complaint_data", empty_complaint_dict()),
-        missing_fields=result.get("missing_fields", []),
-        updated_fields=result.get("updated_fields", []),
-    )
+@app.post("/api/student-complaints/analyze")
+def analyze_student_complaint(req: StudentComplaintClassificationRequest):
+    """Compatibility bridge for the current unauthenticated student portal.
 
+    It generates a review-only draft; authenticated clients must use
+    ``POST /api/complaints`` to persist the complaint and draft.
+    """
+    try:
+        result = classify(req.description, req.clarification, req.category_hint)
+        payload = {**result.model_dump(), "requires_clarification": result.needs_clarification, "draft": None, "authority_error": None}
+        if result.needs_clarification:
+            return payload
+        authority = db = None
+        # A short session is used only to read a trusted, active mapping. No
+        # profile, complaint, or draft is created by this compatibility route.
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            authority = db.query(AuthorityMapping).filter_by(category=result.category, is_active=True).first()
+            name = authority.authority_name if authority else "College Authority"
+            generated = generate_letter(req.description, result.category, result.subcategory, result.urgency, None, name)
+            payload["draft"] = {"recipient_name": authority.authority_name if authority else None, "recipient_email": authority.official_email if authority else None, **generated}
+            if not authority:
+                payload["authority_error"] = f"No active authority mapping exists for {result.category}. An administrator must configure a verified recipient before sending."
+            return payload
+        finally:
+            if db: db.close()
+    except (AIServiceError, RuntimeError) as exc:
+        raise HTTPException(502 if os.getenv("GROQ_API_KEY") else 503, str(exc))
 
-@app.post("/api/upload", response_model=ChatResponse)
-async def upload(session_id: str = Form(...), file: UploadFile = File(...)):
-    if file.content_type != "application/pdf" and not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only PDF uploads are supported right now.")
+@app.post("/api/complaints", response_model=ComplaintOut, status_code=201)
+def create(req: ComplaintCreate, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    p = profile(identity, db); c = StudentComplaint(student_id=p.id, title=req.title or req.description[:80], description=req.description, status="Processing"); db.add(c); db.commit()
+    try: classify_record(c, StudentComplaintClassificationRequest(description=c.description));
+    except (AIServiceError, RuntimeError) as exc: c.status="Failed"; db.commit(); raise HTTPException(502, str(exc))
+    try:
+        if not c.needs_clarification: draft_record(c, p, db)
+        db.commit(); db.refresh(c); return output(c)
+    except HTTPException:
+        # Persist the valid classification, but do not conceal an authority
+        # configuration problem as a successfully generated draft.
+        c.status = "Draft"; db.commit()
+        raise
+    except AIServiceError as exc: c.status="Failed"; db.commit(); raise HTTPException(502, str(exc))
 
-    file_bytes = await file.read()
-    text = extract_pdf_text(file_bytes)
-    if not text:
-        raise HTTPException(422, "Couldn't extract any text from this PDF, it may be a scanned image.")
-
-    result = run_turn(session_id, text, is_document=True)
-    return ChatResponse(
-        reply=result.get("reply", ""),
-        complaint_data=result.get("complaint_data", empty_complaint_dict()),
-        missing_fields=result.get("missing_fields", []),
-        updated_fields=result.get("updated_fields", []),
-    )
-
-
-@app.post("/api/complaints/save", response_model=ComplaintOut)
-def save_complaint(req: SaveComplaintRequest, db: Session = Depends(get_db)):
-    data = req.complaint_data
-    record = Complaint(
-        session_id=req.session_id,
-        complaint_source=data.get("complaint_source"),
-        customer_name=data.get("customer_name"),
-        product_name=data.get("product_name"),
-        product_strength=data.get("product_strength"),
-        batch_number=data.get("batch_number"),
-        affected_quantity=data.get("affected_quantity"),
-        mfg_date=data.get("mfg_date"),
-        exp_date=data.get("exp_date"),
-        complaint_category=data.get("complaint_category"),
-        description=data.get("description"),
-        severity=data.get("severity"),
-        initial_risk_assessment=data.get("initial_risk_assessment"),
-        next_action=data.get("next_action"),
-        capa_recommendations="\n".join(data.get("capa_recommendations") or []),
-        status="Submitted",
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return record
-
-
-@app.get("/api/complaints", response_model=list[ComplaintOut])
-def list_complaints(db: Session = Depends(get_db)):
-    return db.query(Complaint).order_by(Complaint.created_at.desc()).all()
-
+@app.get("/api/complaints", response_model=PaginatedComplaints)
+def list_complaints(status: str | None = None, category: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100), identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    q = db.query(StudentComplaint).join(StudentProfile).filter(StudentProfile.auth_user_id == identity.user_id)
+    if status: q=q.filter(StudentComplaint.status==status)
+    if category: q=q.filter(StudentComplaint.category==category)
+    total=q.count(); records=q.order_by(StudentComplaint.created_at.desc()).offset(offset).limit(limit).all()
+    return PaginatedComplaints(items=[output(c) for c in records], total=total, offset=offset, limit=limit)
 
 @app.get("/api/complaints/{complaint_id}", response_model=ComplaintOut)
-def get_complaint(complaint_id: str, db: Session = Depends(get_db)):
-    record = db.query(Complaint).filter(Complaint.id == complaint_id).first()
-    if not record:
-        raise HTTPException(404, "Complaint not found")
-    return record
+def get(complaint_id: str, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)): return output(owned(complaint_id, identity, db))
+
+@app.patch("/api/complaints/{complaint_id}", response_model=ComplaintOut)
+def update(complaint_id: str, req: ComplaintUpdate, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    c=owned(complaint_id, identity, db)
+    for k,v in req.model_dump(exclude_unset=True).items(): setattr(c,k,v)
+    if req.description is not None: c.status="Draft"; c.category=c.subcategory=c.urgency=c.classification_reason=c.clarification_question=None; c.needs_clarification=False
+    db.commit(); db.refresh(c); return output(c)
+
+@app.post("/api/complaints/{complaint_id}/classify", response_model=ComplaintOut)
+def retry_classify(complaint_id: str, req: StudentComplaintClassificationRequest, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    c=owned(complaint_id, identity, db)
+    try: classify_record(c, req); db.commit(); return output(c)
+    except (AIServiceError, RuntimeError) as exc: c.status="Failed"; db.commit(); raise HTTPException(502, str(exc))
+
+@app.post("/api/complaints/{complaint_id}/draft", response_model=ComplaintOut)
+def draft(complaint_id: str, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    c=owned(complaint_id, identity, db); p=profile(identity, db)
+    try: draft_record(c,p,db); db.commit(); return output(c)
+    except AIServiceError as exc: c.status="Failed"; db.commit(); raise HTTPException(502, str(exc))
+
+@app.patch("/api/complaints/{complaint_id}/draft", response_model=ComplaintOut)
+def edit_draft(complaint_id: str, req: LetterDraftEdit, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    c=owned(complaint_id, identity, db); d=max(c.drafts,key=lambda x:x.version,default=None)
+    if not d: raise HTTPException(409,"Generate a draft first")
+    for k,v in req.model_dump(exclude_unset=True).items(): setattr(d,k,v)
+    c.status="Awaiting Approval"; db.commit(); return output(c)
+
+@app.post("/api/complaints/{complaint_id}/approve-send", response_model=ComplaintOut)
+def approve_send(complaint_id: str, identity: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    c=owned(complaint_id, identity, db); d=max(c.drafts,key=lambda x:x.version,default=None)
+    if not d: raise HTTPException(409,"No draft exists to approve")
+    # One approval attempt per draft. This is the idempotency boundary that
+    # prevents a later Gmail implementation from delivering duplicates.
+    if db.query(EmailLog).filter_by(draft_id=d.id).first(): raise HTTPException(409,"This draft has already been approved for delivery")
+    d.approved_at=dt.datetime.now(dt.UTC); c.status="Approved"; db.add(EmailLog(complaint_id=c.id,draft_id=d.id,recipient_email=d.recipient_email,status="Unavailable",error_code="GMAIL_NOT_CONFIGURED")); db.commit()
+    raise HTTPException(503,"Email delivery is not configured. The draft was approved but was not sent.")
